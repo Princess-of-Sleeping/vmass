@@ -16,6 +16,8 @@ Content is retained for suspend
 exFAT -> FAT16(vmass) : 13000KB/s
 FAT16 -> FAT16(vmass) : 15000KB/s
 ```
+# Note
+When a game, app, etc. is started in +109MB mode, it may operate incorrectly due to a lack of memory
 
 # Installing
 
