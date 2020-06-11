@@ -16,7 +16,9 @@
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/io/fcntl.h>
+#include <psp2kern/io/stat.h>
 #include <taihen.h>
+#include <string.h>
 #include "vmass.h"
 
 #define HookExport(module_name, library_nid, func_nid, func_name) taiHookFunctionExportForKernel(0x10005, &func_name ## _ref, module_name, library_nid, func_nid, func_name ## _patch)
@@ -76,10 +78,30 @@ int SceUsbMassForDriver_7833D935_patch(int a1, int a2){
 	return 0;
 }
 
+tai_hook_ref_t ksceIoOpen_ref;
+SceUID ksceIoOpen_patch(const char *file, int flags, SceMode mode){
+
+	SceUID fd;
+
+	fd = TAI_CONTINUE(SceUID, ksceIoOpen_ref, file, flags, mode);
+
+	if((fd > 0) && (strcmp(file, "tty0:") == 0 || strcmp(file, "tty1:") == 0 || strcmp(file, "tty7:") == 0)){
+		ksceIoClose(fd);
+		fd = TAI_CONTINUE(SceUID, ksceIoOpen_ref, "uma0:log.txt", SCE_O_WRONLY | SCE_O_RDONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
+	}
+
+	return fd;
+}
+
 void _start() __attribute__ ((weak, alias("module_start")));
 int module_start(SceSize args, void *argp){
 
+	SceIoStat stat;
+
 	if(ksceKernelSearchModuleByName("SceUsbMass") > 0)
+		return SCE_KERNEL_START_NO_RESIDENT;
+
+	if(ksceIoGetstat("uma0:", &stat) == 0)
 		return SCE_KERNEL_START_NO_RESIDENT;
 
 	if(vmassInit() < 0)
@@ -93,6 +115,11 @@ int module_start(SceSize args, void *argp){
 	hook[5] = HookImport("SceSdstor", 0x15243ec5, 0x7833d935, SceUsbMassForDriver_7833D935);
 
 	ksceIoMount(0xF00, NULL, 2, 0, 0, 0);
+
+	/*
+	 * redirect sceClibPrintf out to uma0:log.txt
+	 */
+	// HookImport("SceProcessmgr", 0x40fd29c7, 0x75192972, ksceIoOpen);
 
 	return SCE_KERNEL_START_SUCCESS;
 }
