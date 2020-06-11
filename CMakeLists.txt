@@ -21,7 +21,6 @@ add_executable(vmass
 )
 
 target_link_libraries(vmass
-  SceCpuForDriver_stub
   SceDebugForDriver_stub
   SceIofilemgrForDriver_stub
   SceThreadmgrForDriver_stub
@@ -29,7 +28,6 @@ target_link_libraries(vmass
   SceSysmemForDriver_stub
   SceSysclibForDriver_stub
   taihenForKernel_stub
-  taihenModuleUtils_stub
 )
 
 set_target_properties(vmass
