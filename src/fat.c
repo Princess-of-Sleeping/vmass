@@ -88,7 +88,6 @@ int setFat16Header(FatHeader *pFatHeader, unsigned int sector_num){
 
 	pFatHeader->fat_base.num_fats          = 2;
 	pFatHeader->fat_base.root_entry_sector = 0x200;
-	pFatHeader->fat_base.all_sector_num    = 0;
 	pFatHeader->fat_base.media             = 0xF8;
 	pFatHeader->fat_base.fat_size_16       = (uint16_t)((sector_num >> 11) + 0x3);
 
@@ -114,4 +113,15 @@ int setFat16Header(FatHeader *pFatHeader, unsigned int sector_num){
 	pFatHeader->fat16.sector_sig          = 0xAA55;
 
 	return 0;
+}
+
+int setFat12Header(FatHeader *pFatHeader, unsigned int sector_num){
+
+	int res;
+
+	res = setFat16Header(pFatHeader, sector_num);
+
+	memcpy(pFatHeader->fat16.fs_type, "FAT12   ", 8);
+
+	return res;
 }
