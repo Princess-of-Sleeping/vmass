@@ -1,4 +1,4 @@
-﻿/*
+/*
  * PlayStation(R)Vita Virtual Mass FAT Header
  * Copyright (C) 2020 Princess of Slepping
  *
@@ -88,6 +88,8 @@ typedef struct FAT32Fsinfo {
 	char rsvd2[14];
 	uint16_t sector_sig;
 } __attribute__((packed)) FAT32Fsinfo;
+
+int setFat12Header(FatHeader *pFatHeader, unsigned int sector_num);
 
 int setFat16Header(FatHeader *pFatHeader, unsigned int sector_num);
 
