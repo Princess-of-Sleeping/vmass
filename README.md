@@ -18,7 +18,7 @@ FAT16 -> FAT16(vmass) : 15000KB/s
 
 # Saving vmass storage
 
-Power off or restart while holding the start button to save vmass storage.
+Power off or reboot while holding the start button to save vmass storage.
 
 Path where img is saved
 ```
