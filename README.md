@@ -16,11 +16,11 @@ exFAT -> FAT16(vmass) : 13000KB/s
 FAT16 -> FAT16(vmass) : 15000KB/s
 ```
 
-# Save vmass storage
+# Saving vmass storage
 
 Power off or restart while holding the start button to save vmass.
 
-Save path
+Path where img is saved
 ```
 sd0:vmass.img
 
