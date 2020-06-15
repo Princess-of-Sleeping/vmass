@@ -16,10 +16,23 @@
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/sysmem.h>
+#include <psp2kern/io/fcntl.h>
+#include <psp2kern/io/stat.h>
+#include <psp2kern/ctrl.h>
+#include <psp2kern/display.h>
 #include <taihen.h>
 #include <string.h>
 #include "vmass.h"
 #include "fat.h"
+
+typedef int (* SceSysEventCallback)(int resume, int eventid, void *args, void *opt);
+
+SceUID ksceKernelRegisterSysEventHandler(const char *name, SceSysEventCallback cb, void *argp);
+int ksceKernelUnregisterSysEventHandler(SceUID id);
+
+#define SCE_SYS_EVENT_STATE_SUSPEND  (0)
+#define SCE_SYS_EVENT_STATE_POWEROFF (1)
+#define SCE_SYS_EVENT_STATE_REBOOT   (2)
 
 const char umass_start_byepass_patch[] = {
 	0x00, 0xBF, 0x00, 0xBF,
@@ -34,17 +47,36 @@ const char umass_start_byepass_patch[] = {
 #define SIZE_10MiB  0xA00000
 #define SIZE_16MiB 0x1000000
 
-SceSize g_vmass_size;
-
 typedef struct VmassPageAllocInfo {
 	unsigned int mem_type;
 	unsigned int paddr;
 	SceSize size;
 } VmassPageAllocInfo;
 
+#define USE_MEMORY_10MiB  1
+#define USE_MEMORY_32MiB  0
+#define USE_DEVKIT_MEMORY 0
+
+#define DEVKIT_MEM_1MiB  {0x10F0D006, 0x00000000, 0x100000}
+#define DEVKIT_MEM_4MiB  DEVKIT_MEM_1MiB, DEVKIT_MEM_1MiB, DEVKIT_MEM_1MiB, DEVKIT_MEM_1MiB
+#define DEVKIT_MEM_16MiB DEVKIT_MEM_4MiB, DEVKIT_MEM_4MiB, DEVKIT_MEM_4MiB, DEVKIT_MEM_4MiB
+
 const VmassPageAllocInfo page_alloc_list[] = {
+
+#if USE_DEVKIT_MEMORY != 0
+	DEVKIT_MEM_16MiB,
+	DEVKIT_MEM_16MiB,
+#endif
+
 	// ScePhyMemPartGameCdram
+#if USE_MEMORY_32MiB != 0
+	{0x40408006, 0x00000000, SIZE_16MiB},
+	{0x40408006, 0x00000000, SIZE_16MiB},
+#endif
+
+#if USE_MEMORY_10MiB != 0
 	{0x40408006, 0x00000000, SIZE_10MiB},
+#endif
 
 	// ScePhyMemPartPhyCont
 	{0x30808006, 0x00000000, SIZE_4MiB},
@@ -54,6 +86,9 @@ const VmassPageAllocInfo page_alloc_list[] = {
 };
 
 #define VMASS_PAGE_NUM (sizeof(page_alloc_list) / sizeof(VmassPageAllocInfo))
+
+SceUID sysevent_id;
+SceSize g_vmass_size;
 
 void *membase[VMASS_PAGE_NUM];
 
@@ -208,6 +243,19 @@ int load_umass(void){
 	return res;
 }
 
+int vmassFreeStoragePage(void){
+
+	int i = VMASS_PAGE_NUM;
+
+	do {
+		i--;
+		if(membase[i] != NULL)
+			ksceKernelFreeMemBlock(ksceKernelFindMemBlockByAddr(membase[i], 0));
+	} while(i != 0);
+
+	return 0;
+}
+
 int vmassAllocStoragePage(void){
 
 	SceUID memid;
@@ -227,16 +275,8 @@ int vmassAllocStoragePage(void){
 
 		memid = ksceKernelAllocMemBlock("VmassStoragePage", page_alloc_list[i].mem_type, page_alloc_list[i].size, pOpt);
 		if(memid < 0){
-
 			ksceDebugPrintf("failed 0x%X\n", i);
-
-			i = VMASS_PAGE_NUM;
-
-			do {
-				i--;
-				if(membase[i] != NULL)
-					ksceKernelFreeMemBlock(ksceKernelFindMemBlockByAddr(membase[i], 0));
-			} while(i != 0);
+			vmassFreeStoragePage();
 
 			return memid;
 		}
@@ -249,18 +289,10 @@ int vmassAllocStoragePage(void){
 	return 0;
 }
 
-int vmassInit(void){
+int vmassInitImageHeader(void){
 
-	int res, buf[0x200 >> 2];
+	int buf[0x200 >> 2];
 	FatHeader fat_header;
-
-	res = ksceKernelInitializeFastMutex(&lw_mtx, "VmassMutex", 0, 0);
-	if(res < 0)
-		return res;
-
-	res = vmassAllocStoragePage();
-	if(res < 0)
-		return res;
 
 	memset(buf, 0, 0x200);
 
@@ -282,7 +314,166 @@ int vmassInit(void){
 	vmassWriteSector(2, buf, 1);
 	vmassWriteSector(fat_header.fat_base.fat_size_16 + 2, buf, 1);
 
-	res = load_umass();
+	return 0;
+}
+
+int vmassLoadImage(void){
+
+	int res;
+	SceIoStat stat;
+	SceUID fd;
+
+	fd = ksceIoOpen("sd0:vmass.img", SCE_O_RDONLY, 0);
+	if(fd < 0)
+		fd = ksceIoOpen("ux0:data/vmass.img", SCE_O_RDONLY, 0);
+
+	if(fd < 0)
+		return fd;
+
+	/*
+	 * using the bootlogo area, so may see garbage, so clear the kernel framebuffer
+	 */
+	ksceDisplaySetFrameBuf(NULL, SCE_DISPLAY_SETBUF_NEXTFRAME);
+
+	res = ksceIoGetstatByFd(fd, &stat);
+	if(res < 0)
+		goto io_close;
+
+	if(stat.st_size > (SceOff)(g_vmass_size)){
+		res = -1;
+		goto io_close;
+	}
+
+	g_vmass_size = (SceSize)stat.st_size;
+
+	SceSize page_idx = 0, size = g_vmass_size, work_size;
+
+	while(size != 0){
+		work_size = (size > page_alloc_list[page_idx].size) ? page_alloc_list[page_idx].size : size;
+
+		ksceIoRead(fd, membase[page_idx], work_size);
+
+		size -= work_size;
+		page_idx++;
+	}
+
+	res = 0;
+
+io_close:
+	ksceIoClose(fd);
 
 	return res;
+}
+
+int vmassCreateImage(void){
+
+	int res;
+	SceIoStat stat;
+	SceUID fd;
+
+	fd = ksceIoOpen("sd0:vmass.img", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+	if(fd < 0)
+		fd = ksceIoOpen("ux0:data/vmass.img", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+
+	if(fd < 0)
+		return fd;
+
+	memset(&stat, 0, sizeof(stat));
+	stat.st_size = (SceOff)g_vmass_size;
+
+#define SCE_CST_SIZE        0x0004
+
+	res = ksceIoChstatByFd(fd, &stat, SCE_CST_SIZE);
+	if(res < 0)
+		goto io_close;
+
+	SceSize page_idx = 0, size = g_vmass_size, work_size;
+
+	while(size != 0){
+		work_size = (size > page_alloc_list[page_idx].size) ? page_alloc_list[page_idx].size : size;
+
+		ksceIoWrite(fd, membase[page_idx], work_size);
+
+		size -= work_size;
+		page_idx++;
+	}
+
+	res = 0;
+
+io_close:
+	ksceIoClose(fd);
+
+	return res;
+}
+
+int sysevent_handler(int resume, int eventid, void *args, void *opt){
+
+	int res;
+
+	if(resume == 0 && eventid == 0x204 && *(int *)(args + 0x00) == 0x18 && *(int *)(args + 0x04) != SCE_SYS_EVENT_STATE_SUSPEND){
+
+		SceCtrlData pad;
+		res = ksceCtrlPeekBufferPositive(0, &pad, 1);
+		if(res < 0)
+			goto end;
+
+		if((pad.buttons & SCE_CTRL_START) == 0)
+			goto end;
+
+		/*
+		 * Unmount uma0: and remove file cache etc.
+		 */
+		res = ksceIoUmount(0xF00, 1, 0, 0);
+		if(res < 0)
+			goto end;
+
+		vmassCreateImage();
+	}
+
+end:
+	return 0;
+}
+
+int vmassInit(void){
+
+	int res;
+
+	res = ksceKernelInitializeFastMutex(&lw_mtx, "VmassMutex", 0, 0);
+	if(res < 0)
+		return res;
+
+	sysevent_id = ksceKernelRegisterSysEventHandler("SceSysEventVmass", sysevent_handler, NULL);
+	if(sysevent_id < 0){
+		res = sysevent_id;
+		goto error1;
+	}
+
+	res = vmassAllocStoragePage();
+	if(res < 0)
+		goto error2;
+
+	res = vmassLoadImage();
+	if(res < 0)
+		res = vmassInitImageHeader();
+
+	if(res < 0)
+		goto error3;
+
+	res = load_umass();
+	if(res < 0)
+		goto error3;
+
+end:
+	return res;
+
+error3:
+	vmassFreeStoragePage();
+
+error2:
+	ksceKernelUnregisterSysEventHandler(sysevent_id);
+
+error1:
+	ksceKernelDeleteFastMutex(&lw_mtx);
+
+	goto end;
 }
