@@ -11,11 +11,25 @@ It is useful as fast temporary storage as its contents are wiped at power off or
 Content is retained for suspend
 
 # Access Speed
-
 ```
 exFAT -> FAT16(vmass) : 13000KB/s
 FAT16 -> FAT16(vmass) : 15000KB/s
 ```
+
+# Save vmass storage
+
+Power off or restart while holding the start button to save vmass.
+
+Save path
+```
+sd0:vmass.img
+
+If it cannot be saved to sd0, it will be saved to ux0.
+ux0:data/vmass.img
+```
+
+If img was saved in these paths when vmass started, read them and restore the previous storage.
+
 # Note
 When a game, app, etc. is started in +109MB mode, it may operate incorrectly due to a lack of memory
 
