@@ -21,12 +21,15 @@ add_executable(vmass
 )
 
 target_link_libraries(vmass
+  SceCtrlForDriver_stub
   SceDebugForDriver_stub
+  SceDisplayForDriver_stub
   SceIofilemgrForDriver_stub
   SceThreadmgrForDriver_stub
   SceModulemgrForDriver_stub
   SceSysmemForDriver_stub
   SceSysclibForDriver_stub
+  SceKernelSuspendForDriver_stub
   taihenForKernel_stub
 )
 
