@@ -11,6 +11,9 @@ It is useful as fast temporary storage as its contents are wiped at power off or
 Content is retained for suspend
 
 # Access Speed
+
+basic speed : 66~78MiB/s
+
 ```
 exFAT -> FAT16(vmass) : 13000KB/s
 FAT16 -> FAT16(vmass) : 15000KB/s
