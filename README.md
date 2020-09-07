@@ -19,6 +19,14 @@ exFAT(gcsd) -> FAT16(vmass) : 13000KB/s
 FAT16(emmc) -> FAT16(vmass) : 15000KB/s
 ```
 
+# VitaShell USB Mode
+
+When using VitaShell USB Mode(#1), unmount uma0: before connecting usb.
+
+If use USB Mode without unmounting uma0:, the file system of uma0: will be corrupted.
+
+#1 : same case to using sceUsbstorVStorStart too
+
 # Saving vmass storage
 
 Power off or reboot while holding the start button to save vmass storage.
