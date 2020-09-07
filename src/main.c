@@ -15,6 +15,7 @@
 
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/threadmgr.h>
+#include <psp2kern/kernel/sysmem.h>
 #include <psp2kern/io/fcntl.h>
 #include <psp2kern/io/stat.h>
 #include <taihen.h>
@@ -106,6 +107,19 @@ int module_start(SceSize args, void *argp){
 
 	if(vmassInit() < 0)
 		return SCE_KERNEL_START_FAILED;
+
+	// if ((FAT_Base *))->all_sector is 0, sceUsbstorVStorStart is return to 0x80244112
+
+	void *data = ksceKernelAllocHeapMemory(0x1000B, 0x200);
+
+	vmassReadSector(0, data, 1);
+
+	if(*(uint32_t *)(data + 0x20) == 0){
+		*(uint32_t *)(data + 0x20) = *(uint16_t *)(data + 0x13);
+		vmassWriteSector(0, data, 1);
+	}
+
+	ksceKernelFreeHeapMemory(0x1000B, data);
 
 	hook[0] = HookImport("SceSdstor", 0x15243ec5, 0xd989a9f6, sceUsbMassGetDevInfo);
 	hook[1] = HookImport("SceSdstor", 0x15243ec5, 0xb80d1df8, sceUsbMassReadSector);
