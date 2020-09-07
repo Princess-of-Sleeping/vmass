@@ -573,13 +573,10 @@ io_close:
 
 int sysevent_handler(int resume, int eventid, void *args, void *opt){
 
-	int res;
-
 	if(resume == 0 && eventid == 0x204 && *(int *)(args + 0x00) == 0x18 && *(int *)(args + 0x04) != SCE_SYS_EVENT_STATE_SUSPEND){
 
 		SceCtrlData pad;
-		res = ksceCtrlPeekBufferPositive(0, &pad, 1);
-		if(res < 0)
+		if(ksceCtrlPeekBufferPositive(0, &pad, 1) < 0)
 			goto end;
 
 		if((pad.buttons & SCE_CTRL_START) == 0)
@@ -588,9 +585,7 @@ int sysevent_handler(int resume, int eventid, void *args, void *opt){
 		/*
 		 * Unmount uma0: and remove file cache etc.
 		 */
-		res = ksceIoUmount(0xF00, 1, 0, 0);
-		if(res < 0)
-			goto end;
+		ksceIoUmount(0xF00, 1, 0, 0);
 
 		vmassCreateImage();
 	}
