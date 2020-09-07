@@ -2,7 +2,7 @@ vmass:
   attributes: 0
   version:
     major: 0x1
-    minor: 0x20
+    minor: 0x30
   main:
     start: module_start
     stop: module_stop
