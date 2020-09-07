@@ -194,13 +194,156 @@ int vmassGetDevInfo(SceUsbMassDevInfo *info){
 	return res;
 }
 
+#define VMASS_CAPTURE_SPEED (0)
+
+#if VMASS_CAPTURE_SPEED != 0
+
+#include <psp2kern/kernel/cpu.h>
+
+#define VMASS_PERF_S() SceInt64 time_s, time_e; \
+			{ \
+			time_s = ksceKernelGetSystemTimeWide(); \
+			}
+
+#define VMASS_PERF_E(type, sector) { \
+			time_e = ksceKernelGetSystemTimeWide(); \
+			int BytePerSecond = 0; \
+			getBytePerSecond(time_e - time_s, (sector << 9), &BytePerSecond); \
+			ksceDebugPrintf("[%-7s] %d:Time %9dMB/s\n", type, ksceKernelCpuGetCpuId(), BytePerSecond); \
+			}
+
+int getBytePerSecond(int time, int byte, int *dst){
+
+	asm volatile (
+		// s0 : time
+		// s3 : byte
+		"vmov s0, %0\n"
+		"vmov s3, %1\n"
+		"vcvt.f32.u32 s0, s0\n"
+		"vcvt.f32.u32 s3, s3\n"
+
+		// 1000000.0f
+		"movw r3, #:lower16:0x49742400\n"
+		"movt r3, #:upper16:0x49742400\n"
+		"vmov s1, r3\n"
+
+		// 1000.0f
+		"movw r3, #:lower16:0x447A0000\n"
+		"movt r3, #:upper16:0x447A0000\n"
+		"vmov s2, r3\n"
+
+		// s0 = 1000000.0f / time
+		"vdiv.f32 s0, s1, s0\n"
+
+		// s0 = byte * s0
+		"vmul.f32 s0, s3, s0\n"
+
+		// byte to KB
+		"vdiv.f32 s0, s0, s2\n"
+
+		// KB to MB
+		"vdiv.f32 s0, s0, s2\n"
+
+		// float to int
+		"vcvt.u32.f32 s0, s0\n"
+		"vstr s0, [%2]\n"
+		:
+		: "r"(time), "r"(byte), "r"(dst)
+		: "r3", "s0", "s1", "s2", "s3"
+	);
+
+	return 0;
+}
+
+#else
+
+#define VMASS_PERF_S()
+#define VMASS_PERF_E(type, sector)
+
+#endif
+
+#define VMASS_REQ_READ  (1 << 0)
+#define VMASS_REQ_WRITE (1 << 1)
+#define VMASS_REQ_DONE  (1 << 30)
+#define VMASS_REQ_EXIT  (1 << 31)
+
+SceSize g_sector_pos;
+SceSize g_sector_num;
+void *g_pDataForRead;
+const void *g_pDataForWrite;
+SceUID thid, evf_id;
+
+int sceVmassRWThread(SceSize args, void *argp){
+
+	int res, prev_priority;
+	unsigned int opcode;
+
+	while(1){
+		opcode = 0;
+		res = ksceKernelWaitEventFlag(evf_id, VMASS_REQ_READ | VMASS_REQ_WRITE | VMASS_REQ_EXIT, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, &opcode, NULL);
+		if(res < 0)
+			continue;
+
+		if(opcode == VMASS_REQ_READ){
+
+			prev_priority = ksceKernelGetThreadCurrentPriority();
+
+			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), 0x28);
+
+			_vmassReadSector(g_sector_pos, g_pDataForRead, g_sector_num);
+			ksceKernelSetEventFlag(evf_id, VMASS_REQ_DONE);
+
+			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), prev_priority);
+
+		}else if(opcode == VMASS_REQ_WRITE){
+
+			prev_priority = ksceKernelGetThreadCurrentPriority();
+
+			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), 0x28);
+
+			_vmassWriteSector(g_sector_pos, g_pDataForWrite, g_sector_num);
+			ksceKernelSetEventFlag(evf_id, VMASS_REQ_DONE);
+
+			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), prev_priority);
+
+		}else if(opcode == VMASS_REQ_EXIT){
+			ksceKernelSetEventFlag(evf_id, VMASS_REQ_DONE);
+			break;
+		}
+	}
+
+	return 0;
+}
+
 int vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num){
 
-	int res;
+	int res = 0, s1;
+
+	SceSize off = (sector_pos << 9), size = (sector_num << 9);
+
+	if((size == 0) || ((off + size) > g_vmass_size) || (off >= g_vmass_size) || (size > g_vmass_size))
+		return -1;
 
 	ksceKernelLockFastMutex(&lw_mtx);
 
-	res = _vmassReadSector(sector_pos, data, sector_num);
+	s1 = sector_num & 1;
+	sector_num >>= 1;
+
+	VMASS_PERF_S();
+
+	if(sector_num != 0){
+		g_sector_pos = sector_pos;
+		g_sector_num = sector_num;
+		g_pDataForRead = data;
+		ksceKernelSetEventFlag(evf_id, VMASS_REQ_READ);
+	}
+
+	_vmassReadSector(sector_pos + sector_num, data + (sector_num << 9), sector_num + s1);
+
+	if(sector_num != 0)
+		ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+
+	VMASS_PERF_E("Read", ((sector_num << 1) + s1));
 
 	ksceKernelUnlockFastMutex(&lw_mtx);
 
@@ -209,11 +352,33 @@ int vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num){
 
 int vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num){
 
-	int res;
+	int res = 0, s1;
+
+	SceSize off = (sector_pos << 9), size = (sector_num << 9);
+
+	if((size == 0) || ((off + size) > g_vmass_size) || (off >= g_vmass_size) || (size > g_vmass_size))
+		return -1;
 
 	ksceKernelLockFastMutex(&lw_mtx);
 
-	res = _vmassWriteSector(sector_pos, data, sector_num);
+	s1 = sector_num & 1;
+	sector_num >>= 1;
+
+	VMASS_PERF_S();
+
+	if(sector_num != 0){
+		g_sector_pos = sector_pos;
+		g_sector_num = sector_num;
+		g_pDataForWrite = data;
+		ksceKernelSetEventFlag(evf_id, VMASS_REQ_WRITE);
+	}
+
+	_vmassWriteSector(sector_pos + sector_num, data + (sector_num << 9), sector_num + s1);
+
+	if(sector_num != 0)
+		ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+
+	VMASS_PERF_E("Write", ((sector_num << 1) + s1));
 
 	ksceKernelUnlockFastMutex(&lw_mtx);
 
@@ -442,37 +607,59 @@ int vmassInit(void){
 	if(res < 0)
 		return res;
 
+	evf_id = ksceKernelCreateEventFlag("VmassEvf", SCE_EVENT_WAITMULTIPLE, 0, NULL);
+	if(evf_id < 0){
+		res = evf_id;
+		goto del_mtx;
+	}
+
+	thid = ksceKernelCreateThread("SceVmassRWThread", sceVmassRWThread, 0x6E, 0x1000, 0, 1 << 0, NULL);
+	if(thid < 0){
+		res = thid;
+		goto del_evf;
+	}
+
+	res = ksceKernelStartThread(thid, 0, NULL);
+	if(res < 0)
+		goto del_thread;
+
 	sysevent_id = ksceKernelRegisterSysEventHandler("SceSysEventVmass", sysevent_handler, NULL);
 	if(sysevent_id < 0){
 		res = sysevent_id;
-		goto error1;
+		goto del_thread;
 	}
 
 	res = vmassAllocStoragePage();
 	if(res < 0)
-		goto error2;
+		goto unregister_sys_event;
 
 	res = vmassLoadImage();
 	if(res < 0)
 		res = vmassInitImageHeader();
 
 	if(res < 0)
-		goto error3;
+		goto free_storage_page;
 
 	res = load_umass();
 	if(res < 0)
-		goto error3;
+		goto free_storage_page;
 
 end:
 	return res;
 
-error3:
+free_storage_page:
 	vmassFreeStoragePage();
 
-error2:
+unregister_sys_event:
 	ksceKernelUnregisterSysEventHandler(sysevent_id);
 
-error1:
+del_thread:
+	ksceKernelDeleteThread(thid);
+
+del_evf:
+	ksceKernelDeleteEventFlag(evf_id);
+
+del_mtx:
 	ksceKernelDeleteFastMutex(&lw_mtx);
 
 	goto end;
