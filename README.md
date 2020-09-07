@@ -12,8 +12,8 @@ Content is retained for suspend
 
 # Basic Access Speed
 ```
-Read  : 66 ~ 78MiB/s
-Write : 147~197MiB/s
+Read  : 37~143MB/s
+Write : 45~512MB/s
 
 exFAT(gcsd) -> FAT16(vmass) : 13000KB/s
 FAT16(emmc) -> FAT16(vmass) : 15000KB/s
