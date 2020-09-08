@@ -16,6 +16,7 @@
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/sysmem.h>
+#include <psp2kern/kernel/dmac.h>
 #include <psp2kern/io/fcntl.h>
 #include <psp2kern/io/stat.h>
 #include <psp2kern/ctrl.h>
@@ -70,19 +71,19 @@ const VmassPageAllocInfo page_alloc_list[] = {
 
 	// ScePhyMemPartGameCdram
 #if USE_MEMORY_32MiB != 0
-	{0x40408006, 0x00000000, SIZE_16MiB},
-	{0x40408006, 0x00000000, SIZE_16MiB},
+	{0x40404006, 0x00000000, SIZE_16MiB},
+	{0x40404006, 0x00000000, SIZE_16MiB},
 #endif
 
 #if USE_MEMORY_10MiB != 0
-	{0x40408006, 0x00000000, SIZE_10MiB},
+	{0x40404006, 0x00000000, SIZE_10MiB},
 #endif
 
 	// ScePhyMemPartPhyCont
-	{0x30808006, 0x00000000, SIZE_4MiB},
+	{0x1080D006, 0x00000000, SIZE_4MiB},
 
 	// SceDisplay
-	{0x10208006, 0x1C000000, SIZE_2MiB}
+	{0x6020D006, 0x1C000000, SIZE_2MiB}
 };
 
 #define VMASS_PAGE_NUM (sizeof(page_alloc_list) / sizeof(VmassPageAllocInfo))
@@ -448,6 +449,9 @@ int vmassAllocStoragePage(void){
 
 		ksceKernelGetMemBlockBase(memid, &membase[i]);
 
+		if(page_alloc_list[i].paddr != 0)
+			ksceDmacMemset(membase[i], 0, page_alloc_list[i].size);
+
 		g_vmass_size += page_alloc_list[i].size;
 	}
 
@@ -647,6 +651,11 @@ free_storage_page:
 
 unregister_sys_event:
 	ksceKernelUnregisterSysEventHandler(sysevent_id);
+
+	ksceKernelSetEventFlag(evf_id, VMASS_REQ_EXIT);
+	ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+
+	ksceKernelWaitThreadEnd(thid, NULL, NULL);
 
 del_thread:
 	ksceKernelDeleteThread(thid);
