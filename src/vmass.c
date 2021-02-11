@@ -16,32 +16,15 @@
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/sysmem.h>
+#include <psp2kern/kernel/sysclib.h>
+#include <psp2kern/kernel/iofilemgr.h>
 #include <psp2kern/kernel/dmac.h>
 #include <psp2kern/io/fcntl.h>
-#include <psp2kern/io/stat.h>
-#include <psp2kern/ctrl.h>
 #include <psp2kern/display.h>
-#include <taihen.h>
-#include <string.h>
+#include "sysevent.h"
 #include "vmass.h"
+#include "vmass_sysevent.h"
 #include "fat.h"
-
-typedef int (* SceSysEventCallback)(int resume, int eventid, void *args, void *opt);
-
-SceUID ksceKernelRegisterSysEventHandler(const char *name, SceSysEventCallback cb, void *argp);
-int ksceKernelUnregisterSysEventHandler(SceUID id);
-
-#define SCE_SYS_EVENT_STATE_SUSPEND  (0)
-#define SCE_SYS_EVENT_STATE_POWEROFF (1)
-#define SCE_SYS_EVENT_STATE_REBOOT   (2)
-
-const char umass_start_byepass_patch[] = {
-	0x00, 0xBF, 0x00, 0xBF,
-	0x00, 0xBF,
-	0x00, 0xBF, 0x00, 0xBF,
-	0x00, 0xBF,
-	0x00, 0x20, 0x00, 0x00
-};
 
 #define SIZE_2MiB   0x200000
 #define SIZE_4MiB   0x400000
@@ -113,7 +96,7 @@ int _vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num){
 	int page_idx = 0;
 	SceSize off = (sector_pos << 9), size = (sector_num << 9), work_size;
 
-	if((size == 0) || ((off + size) > g_vmass_size) || (off >= g_vmass_size) || (size > g_vmass_size))
+	if(((size - 1) > g_vmass_size) || (off >= g_vmass_size) || ((off + size) > g_vmass_size))
 		return -1;
 
 	while(off >= page_alloc_list[page_idx].size){
@@ -150,7 +133,7 @@ int _vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num){
 	int page_idx = 0;
 	SceSize off = (sector_pos << 9), size = (sector_num << 9), work_size;
 
-	if((size == 0) || ((off + size) > g_vmass_size) || (off >= g_vmass_size) || (size > g_vmass_size))
+	if(((size - 1) > g_vmass_size) || (off >= g_vmass_size) || ((off + size) > g_vmass_size))
 		return -1;
 
 	while(off >= page_alloc_list[page_idx].size){
@@ -263,6 +246,9 @@ int getBytePerSecond(int time, int byte, int *dst){
 
 #endif
 
+#define VMASS_RW_THREAD_PRIORITY_DEF (0x6E)
+#define VMASS_RW_THREAD_PRIORITY_WRK (0x28)
+
 #define VMASS_REQ_READ  (1 << 0)
 #define VMASS_REQ_WRITE (1 << 1)
 #define VMASS_REQ_DONE  (1 << 30)
@@ -276,36 +262,28 @@ SceUID thid, evf_id;
 
 int sceVmassRWThread(SceSize args, void *argp){
 
-	int res, prev_priority;
+	int res;
 	unsigned int opcode;
 
+	SceUID thid = ksceKernelGetThreadId();
+
 	while(1){
+		ksceKernelChangeThreadPriority(thid, VMASS_RW_THREAD_PRIORITY_DEF);
+
 		opcode = 0;
 		res = ksceKernelWaitEventFlag(evf_id, VMASS_REQ_READ | VMASS_REQ_WRITE | VMASS_REQ_EXIT, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, &opcode, NULL);
 		if(res < 0)
 			continue;
 
+		ksceKernelChangeThreadPriority(thid, VMASS_RW_THREAD_PRIORITY_WRK);
+
 		if(opcode == VMASS_REQ_READ){
-
-			prev_priority = ksceKernelGetThreadCurrentPriority();
-
-			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), 0x28);
-
 			_vmassReadSector(g_sector_pos, g_pDataForRead, g_sector_num);
 			ksceKernelSetEventFlag(evf_id, VMASS_REQ_DONE);
 
-			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), prev_priority);
-
 		}else if(opcode == VMASS_REQ_WRITE){
-
-			prev_priority = ksceKernelGetThreadCurrentPriority();
-
-			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), 0x28);
-
 			_vmassWriteSector(g_sector_pos, g_pDataForWrite, g_sector_num);
 			ksceKernelSetEventFlag(evf_id, VMASS_REQ_DONE);
-
-			ksceKernelChangeThreadPriority(ksceKernelGetThreadId(), prev_priority);
 
 		}else if(opcode == VMASS_REQ_EXIT){
 			ksceKernelSetEventFlag(evf_id, VMASS_REQ_DONE);
@@ -322,7 +300,7 @@ int vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num){
 
 	SceSize off = (sector_pos << 9), size = (sector_num << 9);
 
-	if((size == 0) || ((off + size) > g_vmass_size) || (off >= g_vmass_size) || (size > g_vmass_size))
+	if(((size - 1) > g_vmass_size) || (off >= g_vmass_size) || ((off + size) > g_vmass_size))
 		return -1;
 
 	ksceKernelLockFastMutex(&lw_mtx);
@@ -357,7 +335,7 @@ int vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num){
 
 	SceSize off = (sector_pos << 9), size = (sector_num << 9);
 
-	if((size == 0) || ((off + size) > g_vmass_size) || (off >= g_vmass_size) || (size > g_vmass_size))
+	if(((size - 1) > g_vmass_size) || (off >= g_vmass_size) || ((off + size) > g_vmass_size))
 		return -1;
 
 	ksceKernelLockFastMutex(&lw_mtx);
@@ -386,27 +364,28 @@ int vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num){
 	return res;
 }
 
-// Load umass.skprx to avoid taiHEN's unlinked problem
-int load_umass(void){
+int sceUsbMassIntrHandler(int intr_code, void *userCtx){
 
-	int res;
-	SceUID umass_modid, patch_uid;
+	if(intr_code != 0xF)
+		return 0x80010016;
 
-	// Since bootimage cannot be mounted after the second time, load vitashell's umass.skprx
-	umass_modid = ksceKernelLoadModule("ux0:VitaShell/module/umass.skprx", 0, NULL);
-	if(umass_modid < 0)
-		return umass_modid;
+	return -1;
+}
 
-	patch_uid = taiInjectDataForKernel(0x10005, umass_modid, 0, 0x1546, umass_start_byepass_patch, sizeof(umass_start_byepass_patch) - 2);
+int SceUsbMassForDriver_3C821E99(int a1, int a2){
 
-	int start_res = -1;
-	res = ksceKernelStartModule(umass_modid, 0, NULL, 0, NULL, &start_res);
-	if(res >= 0)
-		res = start_res;
+	if(a1 != 0xF)
+		return 0x80010016;
 
-	taiInjectReleaseForKernel(patch_uid);
+	return 0;
+}
 
-	return res;
+int SceUsbMassForDriver_7833D935(int a1, int a2){
+
+	if(a1 != 0xF)
+		return 0x80010016;
+
+	return 0;
 }
 
 int vmassFreeStoragePage(void){
@@ -426,15 +405,15 @@ int vmassAllocStoragePage(void){
 
 	SceUID memid;
 	SceKernelAllocMemBlockKernelOpt opt, *pOpt;
+	memset(&opt, 0, sizeof(opt));
+	opt.size = sizeof(opt);
+	opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_PADDR;
 
 	for(int i=0;i<VMASS_PAGE_NUM;i++){
 
 		pOpt = NULL;
 
 		if(page_alloc_list[i].paddr != 0){
-			memset(&opt, 0, sizeof(opt));
-			opt.size = sizeof(opt);
-			opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_PADDR;
 			opt.paddr = page_alloc_list[i].paddr;
 			pOpt = &opt;
 		}
@@ -466,12 +445,10 @@ int vmassInitImageHeader(void){
 	memset(buf, 0, 0x200);
 
 	if(g_vmass_size >= SIZE_16MiB){
-
 		buf[0] = 0xFFFFFFF8;
 
 		setFat16Header(&fat_header, g_vmass_size >> 9);
 	}else{
-
 		buf[0] = 0xFFFFF8;
 
 		setFat12Header(&fat_header, g_vmass_size >> 9);
@@ -575,29 +552,6 @@ io_close:
 	return res;
 }
 
-int sysevent_handler(int resume, int eventid, void *args, void *opt){
-
-	if(resume == 0 && eventid == 0x204 && *(int *)(args + 0x00) == 0x18 && *(int *)(args + 0x04) != SCE_SYS_EVENT_STATE_SUSPEND){
-
-		SceCtrlData pad;
-		if(ksceCtrlPeekBufferPositive(0, &pad, 1) < 0)
-			goto end;
-
-		if((pad.buttons & SCE_CTRL_START) == 0)
-			goto end;
-
-		/*
-		 * Unmount uma0: and remove file cache etc.
-		 */
-		ksceIoUmount(0xF00, 1, 0, 0);
-
-		vmassCreateImage();
-	}
-
-end:
-	return 0;
-}
-
 int vmassInit(void){
 
 	int res;
@@ -622,7 +576,7 @@ int vmassInit(void){
 	if(res < 0)
 		goto del_thread;
 
-	sysevent_id = ksceKernelRegisterSysEventHandler("SceSysEventVmass", sysevent_handler, NULL);
+	sysevent_id = ksceKernelRegisterSysEventHandler("SceSysEventVmass", vmassSysEventHandler, NULL);
 	if(sysevent_id < 0){
 		res = sysevent_id;
 		goto del_thread;
@@ -636,10 +590,6 @@ int vmassInit(void){
 	if(res < 0)
 		res = vmassInitImageHeader();
 
-	if(res < 0)
-		goto free_storage_page;
-
-	res = load_umass();
 	if(res < 0)
 		goto free_storage_page;
 

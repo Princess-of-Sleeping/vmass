@@ -17,22 +17,22 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti -fno-exceptions")
 add_executable(vmass
   src/main.c
   src/vmass.c
+  src/vmass_sysevent.c
   src/fat.c
 )
 
 target_link_libraries(vmass
   SceCpuForDriver_stub
-  SceCtrlForDriver_stub
   SceDebugForDriver_stub
   SceDmacmgrForDriver_stub
   SceDisplayForDriver_stub
   SceIofilemgrForDriver_stub
   SceThreadmgrForDriver_stub
   SceModulemgrForDriver_stub
+  SceSysconForDriver_stub
   SceSysmemForDriver_stub
   SceSysclibForDriver_stub
   SceKernelSuspendForDriver_stub
-  taihenForKernel_stub
 )
 
 set_target_properties(vmass

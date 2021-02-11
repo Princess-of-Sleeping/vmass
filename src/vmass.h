@@ -28,6 +28,9 @@ typedef struct SceUsbMassDevInfo {
 
 int vmassInit(void);
 
+int vmassCreateImage(void);
+int vmassLoadImage(void);
+
 int vmassGetDevInfo(SceUsbMassDevInfo *info);
 int vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num);
 int vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num);

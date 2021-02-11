@@ -1,15 +1,18 @@
 vmass:
-  attributes: 0
+  attributes: 7
   version:
     major: 0x1
-    minor: 0x31
+    minor: 0x40
   main:
     start: module_start
-    stop: module_stop
   modules:
-    VmassForDriver:
+    SceUsbMassForDriver:
       syscall: false
+      nid: 0x15243EC5
       functions:
-        - vmassGetDevInfo
-        - vmassReadSector
-        - vmassWriteSector
+        - vmassGetDevInfo: 0xD989A9F6
+        - vmassReadSector: 0xB80D1DF8
+        - vmassWriteSector: 0x081CA197
+        - sceUsbMassIntrHandler: 0xF2BAB182
+        - SceUsbMassForDriver_3C821E99: 0x3C821E99
+        - SceUsbMassForDriver_7833D935: 0x7833D935
