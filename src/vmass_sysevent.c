@@ -23,7 +23,7 @@ int vmassSysEventHandler(int resume, int eventid, void *args, void *opt){
 
 	if(resume == 0 && eventid == 0x204 && *(int *)(args + 0x00) == 0x18 && *(int *)(args + 0x04) != SCE_SYS_EVENT_STATE_SUSPEND){
 
-		SceUInt32 ctrl = ~0x74FFFFFF;
+		SceUInt32 ctrl = 0x74FFFFFF;
 
 		ksceSysconGetControlsInfo(&ctrl);
 
