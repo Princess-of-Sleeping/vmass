@@ -25,7 +25,6 @@ target_link_libraries(vmass
   SceCpuForDriver_stub
   SceDebugForDriver_stub
   SceDmacmgrForDriver_stub
-  SceDisplayForDriver_stub
   SceIofilemgrForDriver_stub
   SceThreadmgrForDriver_stub
   SceModulemgrForDriver_stub

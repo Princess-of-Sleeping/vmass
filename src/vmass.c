@@ -17,10 +17,8 @@
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/sysmem.h>
 #include <psp2kern/kernel/sysclib.h>
-#include <psp2kern/kernel/iofilemgr.h>
 #include <psp2kern/kernel/dmac.h>
 #include <psp2kern/io/fcntl.h>
-#include <psp2kern/display.h>
 #include "sysevent.h"
 #include "vmass.h"
 #include "vmass_sysevent.h"
@@ -28,14 +26,14 @@
 
 #define SIZE_2MiB   0x200000
 #define SIZE_4MiB   0x400000
+#define SIZE_6MiB   0x600000
 #define SIZE_10MiB  0xA00000
 #define SIZE_16MiB 0x1000000
 
-typedef struct VmassPageAllocInfo {
-	unsigned int mem_type;
-	unsigned int paddr;
+typedef struct VmassPageInfo {
+	void   *base;
 	SceSize size;
-} VmassPageAllocInfo;
+} VmassPageInfo;
 
 #define USE_MEMORY_10MiB  1
 #define USE_MEMORY_32MiB  0
@@ -45,36 +43,13 @@ typedef struct VmassPageAllocInfo {
 #define DEVKIT_MEM_4MiB  DEVKIT_MEM_1MiB, DEVKIT_MEM_1MiB, DEVKIT_MEM_1MiB, DEVKIT_MEM_1MiB
 #define DEVKIT_MEM_16MiB DEVKIT_MEM_4MiB, DEVKIT_MEM_4MiB, DEVKIT_MEM_4MiB, DEVKIT_MEM_4MiB
 
-const VmassPageAllocInfo page_alloc_list[] = {
-
-#if USE_DEVKIT_MEMORY != 0
-	DEVKIT_MEM_16MiB,
-	DEVKIT_MEM_16MiB,
-#endif
-
-	// ScePhyMemPartGameCdram
-#if USE_MEMORY_32MiB != 0
-	{0x40404006, 0x00000000, SIZE_16MiB},
-	{0x40404006, 0x00000000, SIZE_16MiB},
-#endif
-
-#if USE_MEMORY_10MiB != 0
-	{0x40404006, 0x00000000, SIZE_10MiB},
-#endif
-
-	// ScePhyMemPartPhyCont
-	{0x1080D006, 0x00000000, SIZE_4MiB},
-
-	// SceDisplay
-	{0x6020D006, 0x1C000000, SIZE_2MiB}
-};
-
-#define VMASS_PAGE_NUM (sizeof(page_alloc_list) / sizeof(VmassPageAllocInfo))
-
 SceUID sysevent_id;
 SceSize g_vmass_size;
 
-void *membase[VMASS_PAGE_NUM];
+#define VMASS_PAGE_MAX_NUMBER (0x20)
+
+VmassPageInfo vmass_page_list[VMASS_PAGE_MAX_NUMBER];
+
 
 SceKernelLwMutexWork lw_mtx;
 
@@ -96,20 +71,17 @@ int _vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num){
 	int page_idx = 0;
 	SceSize off = (sector_pos << 9), size = (sector_num << 9), work_size;
 
-	if(((size - 1) > g_vmass_size) || (off >= g_vmass_size) || ((off + size) > g_vmass_size))
-		return -1;
-
-	while(off >= page_alloc_list[page_idx].size){
-		off -= page_alloc_list[page_idx].size;
+	while(off >= vmass_page_list[page_idx].size){
+		off -= vmass_page_list[page_idx].size;
 		page_idx++;
 	}
 
 	if(off != 0){
-		work_size = page_alloc_list[page_idx].size - off;
+		work_size = vmass_page_list[page_idx].size - off;
 		if(work_size > size)
 			work_size = size;
 
-		memcpy(data, membase[page_idx] + off, work_size);
+		memcpy(data, vmass_page_list[page_idx].base + off, work_size);
 		size -= work_size;
 		data += work_size;
 		off = 0;
@@ -117,9 +89,9 @@ int _vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num){
 	}
 
 	while(size != 0){
-		work_size = (size > page_alloc_list[page_idx].size) ? page_alloc_list[page_idx].size : size;
+		work_size = (size > vmass_page_list[page_idx].size) ? vmass_page_list[page_idx].size : size;
 
-		memcpy(data, membase[page_idx], work_size);
+		memcpy(data, vmass_page_list[page_idx].base, work_size);
 		size -= work_size;
 		data += work_size;
 		page_idx++;
@@ -133,20 +105,17 @@ int _vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num){
 	int page_idx = 0;
 	SceSize off = (sector_pos << 9), size = (sector_num << 9), work_size;
 
-	if(((size - 1) > g_vmass_size) || (off >= g_vmass_size) || ((off + size) > g_vmass_size))
-		return -1;
-
-	while(off >= page_alloc_list[page_idx].size){
-		off -= page_alloc_list[page_idx].size;
+	while(off >= vmass_page_list[page_idx].size){
+		off -= vmass_page_list[page_idx].size;
 		page_idx++;
 	}
 
 	if(off != 0){
-		work_size = page_alloc_list[page_idx].size - off;
+		work_size = vmass_page_list[page_idx].size - off;
 		if(work_size > size)
 			work_size = size;
 
-		memcpy(membase[page_idx] + off, data, work_size);
+		memcpy(vmass_page_list[page_idx].base + off, data, work_size);
 		size -= work_size;
 		data += work_size;
 		off = 0;
@@ -154,9 +123,9 @@ int _vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num){
 	}
 
 	while(size != 0){
-		work_size = (size > page_alloc_list[page_idx].size) ? page_alloc_list[page_idx].size : size;
+		work_size = (size > vmass_page_list[page_idx].size) ? vmass_page_list[page_idx].size : size;
 
-		memcpy(membase[page_idx], data, work_size);
+		memcpy(vmass_page_list[page_idx].base, data, work_size);
 		size -= work_size;
 		data += work_size;
 		page_idx++;
@@ -189,11 +158,11 @@ int vmassGetDevInfo(SceUsbMassDevInfo *info){
 			time_s = ksceKernelGetSystemTimeWide(); \
 			}
 
-#define VMASS_PERF_E(type, sector) { \
+#define VMASS_PERF_E(type, sector_pos, sector) { \
 			time_e = ksceKernelGetSystemTimeWide(); \
 			int BytePerSecond = 0; \
-			getBytePerSecond(time_e - time_s, (sector << 9), &BytePerSecond); \
-			ksceDebugPrintf("[%-7s] %d:Time %9dMB/s\n", type, ksceKernelCpuGetCpuId(), BytePerSecond); \
+			getBytePerSecond(time_e - time_s, ((sector) << 9), &BytePerSecond); \
+			ksceDebugPrintf("[%-7s] %d:Sector 0x%08X:0x%08X Time %9dMB/s\n", type, ksceKernelCpuGetCpuId(), (sector_pos), (sector), BytePerSecond); \
 			}
 
 int getBytePerSecond(int time, int byte, int *dst){
@@ -242,7 +211,7 @@ int getBytePerSecond(int time, int byte, int *dst){
 #else
 
 #define VMASS_PERF_S()
-#define VMASS_PERF_E(type, sector)
+#define VMASS_PERF_E(type, sector_pos, sector)
 
 #endif
 
@@ -265,17 +234,15 @@ int sceVmassRWThread(SceSize args, void *argp){
 	int res;
 	unsigned int opcode;
 
-	SceUID thid = ksceKernelGetThreadId();
-
 	while(1){
-		ksceKernelChangeThreadPriority(thid, VMASS_RW_THREAD_PRIORITY_DEF);
+		ksceKernelChangeThreadPriority(0, VMASS_RW_THREAD_PRIORITY_DEF);
 
 		opcode = 0;
 		res = ksceKernelWaitEventFlag(evf_id, VMASS_REQ_READ | VMASS_REQ_WRITE | VMASS_REQ_EXIT, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, &opcode, NULL);
 		if(res < 0)
 			continue;
 
-		ksceKernelChangeThreadPriority(thid, VMASS_RW_THREAD_PRIORITY_WRK);
+		ksceKernelChangeThreadPriority(0, VMASS_RW_THREAD_PRIORITY_WRK);
 
 		if(opcode == VMASS_REQ_READ){
 			_vmassReadSector(g_sector_pos, g_pDataForRead, g_sector_num);
@@ -310,19 +277,28 @@ int vmassReadSector(SceSize sector_pos, void *data, SceSize sector_num){
 
 	VMASS_PERF_S();
 
-	if(sector_num != 0){
+	if(sector_num >= 0x50){
 		g_sector_pos = sector_pos;
 		g_sector_num = sector_num;
 		g_pDataForRead = data;
 		ksceKernelSetEventFlag(evf_id, VMASS_REQ_READ);
+	}else{
+		sector_num = (sector_num << 1) + s1;
+		s1 = -1;
 	}
 
-	_vmassReadSector(sector_pos + sector_num, data + (sector_num << 9), sector_num + s1);
+	if(s1 >= 0){
+		_vmassReadSector(sector_pos + sector_num, data + (sector_num << 9), sector_num + s1);
 
-	if(sector_num != 0)
-		ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+		if(sector_num != 0){
+			ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+		}
+		sector_num = (sector_num << 1) + s1;
+	}else{
+		_vmassReadSector(sector_pos, data, sector_num);
+	}
 
-	VMASS_PERF_E("Read", ((sector_num << 1) + s1));
+	VMASS_PERF_E("Read", sector_pos, sector_num);
 
 	ksceKernelUnlockFastMutex(&lw_mtx);
 
@@ -345,19 +321,28 @@ int vmassWriteSector(SceSize sector_pos, const void *data, SceSize sector_num){
 
 	VMASS_PERF_S();
 
-	if(sector_num != 0){
+	if(sector_num >= 0x20){
 		g_sector_pos = sector_pos;
 		g_sector_num = sector_num;
 		g_pDataForWrite = data;
 		ksceKernelSetEventFlag(evf_id, VMASS_REQ_WRITE);
+	}else{
+		sector_num = (sector_num << 1) + s1;
+		s1 = -1;
 	}
 
-	_vmassWriteSector(sector_pos + sector_num, data + (sector_num << 9), sector_num + s1);
+	if(s1 >= 0){
+		_vmassWriteSector(sector_pos + sector_num, data + (sector_num << 9), sector_num + s1);
 
-	if(sector_num != 0)
-		ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+		if(sector_num != 0){
+			ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+		}
+		sector_num = (sector_num << 1) + s1;
+	}else{
+		_vmassWriteSector(sector_pos, data, sector_num);
+	}
 
-	VMASS_PERF_E("Write", ((sector_num << 1) + s1));
+	VMASS_PERF_E("Write", sector_pos, sector_num);
 
 	ksceKernelUnlockFastMutex(&lw_mtx);
 
@@ -390,49 +375,53 @@ int SceUsbMassForDriver_7833D935(int a1, int a2){
 
 int vmassFreeStoragePage(void){
 
-	int i = VMASS_PAGE_NUM;
+	int i = VMASS_PAGE_MAX_NUMBER;
 
 	do {
 		i--;
-		if(membase[i] != NULL)
-			ksceKernelFreeMemBlock(ksceKernelFindMemBlockByAddr(membase[i], 0));
+		if(vmass_page_list[i].base != NULL)
+			ksceKernelFreeMemBlock(ksceKernelFindMemBlockByAddr(vmass_page_list[i].base, 0));
 	} while(i != 0);
+
+	return 0;
+}
+
+int vmassPageRegister(VmassPageInfo *info, void *base, SceSize size){
+
+	if(base != NULL)
+		info->base = base;
+	info->size = size;
+
+	g_vmass_size += size;
+
+	return 0;
+}
+
+int vmassPageAlloc(VmassPageInfo *info, SceUInt32 memtype, SceSize size){
+
+	SceUID memid = ksceKernelAllocMemBlock("VmassStoragePage", memtype, size, NULL);
+	if(memid < 0){
+		vmassFreeStoragePage();
+
+		return memid;
+	}
+
+	ksceKernelGetMemBlockBase(memid, &(info->base));
+
+	ksceDmacMemset(info->base, 0, size);
+
+	vmassPageRegister(info, NULL, size);
 
 	return 0;
 }
 
 int vmassAllocStoragePage(void){
 
-	SceUID memid;
-	SceKernelAllocMemBlockKernelOpt opt, *pOpt;
-	memset(&opt, 0, sizeof(opt));
-	opt.size = sizeof(opt);
-	opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_PADDR;
+	// ScePhyMemPartPhyCont
+	vmassPageAlloc(&vmass_page_list[0], 0x1080D006, SIZE_6MiB);
 
-	for(int i=0;i<VMASS_PAGE_NUM;i++){
-
-		pOpt = NULL;
-
-		if(page_alloc_list[i].paddr != 0){
-			opt.paddr = page_alloc_list[i].paddr;
-			pOpt = &opt;
-		}
-
-		memid = ksceKernelAllocMemBlock("VmassStoragePage", page_alloc_list[i].mem_type, page_alloc_list[i].size, pOpt);
-		if(memid < 0){
-			ksceDebugPrintf("failed 0x%X\n", i);
-			vmassFreeStoragePage();
-
-			return memid;
-		}
-
-		ksceKernelGetMemBlockBase(memid, &membase[i]);
-
-		if(page_alloc_list[i].paddr != 0)
-			ksceDmacMemset(membase[i], 0, page_alloc_list[i].size);
-
-		g_vmass_size += page_alloc_list[i].size;
-	}
+	// ScePhyMemPartGameCdram
+	// vmassPageAlloc(&vmass_page_list[1], 0x40404006, SIZE_10MiB);
 
 	return 0;
 }
@@ -476,11 +465,6 @@ int vmassLoadImage(void){
 	if(fd < 0)
 		return fd;
 
-	/*
-	 * using the bootlogo area, so may see garbage, so clear the kernel framebuffer
-	 */
-	ksceDisplaySetFrameBuf(NULL, SCE_DISPLAY_SETBUF_NEXTFRAME);
-
 	res = ksceIoGetstatByFd(fd, &stat);
 	if(res < 0)
 		goto io_close;
@@ -495,9 +479,9 @@ int vmassLoadImage(void){
 	SceSize page_idx = 0, size = g_vmass_size, work_size;
 
 	while(size != 0){
-		work_size = (size > page_alloc_list[page_idx].size) ? page_alloc_list[page_idx].size : size;
+		work_size = (size > vmass_page_list[page_idx].size) ? vmass_page_list[page_idx].size : size;
 
-		ksceIoRead(fd, membase[page_idx], work_size);
+		ksceIoRead(fd, vmass_page_list[page_idx].base, work_size);
 
 		size -= work_size;
 		page_idx++;
@@ -536,9 +520,9 @@ int vmassCreateImage(void){
 	SceSize page_idx = 0, size = g_vmass_size, work_size;
 
 	while(size != 0){
-		work_size = (size > page_alloc_list[page_idx].size) ? page_alloc_list[page_idx].size : size;
+		work_size = (size > vmass_page_list[page_idx].size) ? vmass_page_list[page_idx].size : size;
 
-		ksceIoWrite(fd, membase[page_idx], work_size);
+		ksceIoWrite(fd, vmass_page_list[page_idx].base, work_size);
 
 		size -= work_size;
 		page_idx++;
@@ -566,7 +550,7 @@ int vmassInit(void){
 		goto del_mtx;
 	}
 
-	thid = ksceKernelCreateThread("SceVmassRWThread", sceVmassRWThread, 0x6E, 0x1000, 0, 1 << 0, NULL);
+	thid = ksceKernelCreateThread("SceVmassRWThread", sceVmassRWThread, 0x6E, 0x1000, 0, 1 << 3, NULL);
 	if(thid < 0){
 		res = thid;
 		goto del_evf;
@@ -579,7 +563,7 @@ int vmassInit(void){
 	sysevent_id = ksceKernelRegisterSysEventHandler("SceSysEventVmass", vmassSysEventHandler, NULL);
 	if(sysevent_id < 0){
 		res = sysevent_id;
-		goto del_thread;
+		goto stop_thread;
 	}
 
 	res = vmassAllocStoragePage();
@@ -602,6 +586,7 @@ free_storage_page:
 unregister_sys_event:
 	ksceKernelUnregisterSysEventHandler(sysevent_id);
 
+stop_thread:
 	ksceKernelSetEventFlag(evf_id, VMASS_REQ_EXIT);
 	ksceKernelWaitEventFlag(evf_id, VMASS_REQ_DONE, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
 
